@@ -1,61 +1,32 @@
-const bcrypt = require("bcryptjs"); // password hash karne ke liye
-const jwt = require("jsonwebtoken"); // token banane ke liye
-const Dealer = require("../models/deler"); // Dealer model
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const Dealer = require("../models/deler");
+const { FREE_LIMIT, isProActive } = require("../config/plan");
 
-// token banane ka chhota helper, 7 din valid
 const makeToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "7d" });
 
-// ---------- REGISTER ----------
 exports.register = async (req, res) => {
   try {
-    const { dealershipName, ownerName, email, password } = req.body; // frontend se aaya data
+    const { dealershipName, ownerName, email, password } = req.body;
 
     if (!dealershipName || !ownerName || !email || !password) {
-      return res.status(400).json({ message: "Saari fields bharo" }); // koi field khaali
+      return res.status(400).json({ message: "Saari fields bharo" });
     }
     if (password.length < 6) {
-      return res.status(400).json({ message: "Password kam se kam 6 character ka ho" }); // chhota password
+      return res.status(400).json({ message: "Password kam se kam 6 character ka ho" });
     }
 
-    const exists = await Dealer.findOne({ email: email.toLowerCase() }); // email pehle se hai kya
+    const exists = await Dealer.findOne({ email: email.toLowerCase() });
     if (exists) {
-      return res.status(400).json({ message: "Ye email pehle se registered hai" }); // duplicate
+      return res.status(400).json({ message: "Ye email pehle se registered hai" });
     }
 
-    const hashed = await bcrypt.hash(password, 10); // password ko hash kiya (10 = salt rounds)
-    const dealer = await Dealer.create({ dealershipName, ownerName, email, password: hashed }); // DB me save
+    const hashed = await bcrypt.hash(password, 10);
+    const dealer = await Dealer.create({ dealershipName, ownerName, email, password: hashed });
 
     res.status(201).json({
-      token: makeToken(dealer._id), // login token
-      dealer: { id: dealer._id, dealershipName: dealer.dealershipName, ownerName: dealer.ownerName, email: dealer.email }, // password kabhi wapas mat bhejo
-    });
-  } catch (err) {
-    res.status(500).json({ message: "Server error", error: err.message }); // koi unexpected error
-  }
-};
-
-// ---------- LOGIN ----------
-exports.login = async (req, res) => {
-  try {
-    const { email, password } = req.body; // email aur password liya
-
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email aur password dono daalo" }); // khaali check
-    }
-
-    const dealer = await Dealer.findOne({ email: email.toLowerCase() }); // dealer dhoondo
-    if (!dealer) {
-      return res.status(400).json({ message: "Email ya password galat hai" }); // wahi message jaan bujhkar, hacker ko hint na mile
-    }
-
-    const ok = await bcrypt.compare(password, dealer.password); // hash se compare
-    if (!ok) {
-      return res.status(400).json({ message: "Email ya password galat hai" }); // password galat
-    }
-
-    res.json({
-      token: makeToken(dealer._id), // naya token
+      token: makeToken(dealer._id),
       dealer: { id: dealer._id, dealershipName: dealer.dealershipName, ownerName: dealer.ownerName, email: dealer.email },
     });
   } catch (err) {
@@ -63,12 +34,44 @@ exports.login = async (req, res) => {
   }
 };
 
-// ---------- ME (token se dealer ki info) ----------
+exports.login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email aur password dono daalo" });
+    }
+
+    const dealer = await Dealer.findOne({ email: email.toLowerCase() });
+    if (!dealer) {
+      return res.status(400).json({ message: "Email ya password galat hai" });
+    }
+
+    const ok = await bcrypt.compare(password, dealer.password);
+    if (!ok) {
+      return res.status(400).json({ message: "Email ya password galat hai" });
+    }
+
+    res.json({
+      token: makeToken(dealer._id),
+      dealer: { id: dealer._id, dealershipName: dealer.dealershipName, ownerName: dealer.ownerName, email: dealer.email },
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+};
+
 exports.me = async (req, res) => {
   try {
-    const dealer = await Dealer.findById(req.dealerId).select("-password"); // password hata ke data lao
-    if (!dealer) return res.status(404).json({ message: "Dealer nahi mila" }); // account delete ho gaya ho to
-    res.json(dealer); // dealer ka data bhejo
+    const dealer = await Dealer.findById(req.dealerId).select("-password");
+    if (!dealer) return res.status(404).json({ message: "Dealer nahi mila" });
+    const proActive = isProActive(dealer);
+    res.json({
+      ...dealer.toObject(),
+      freeLimit: FREE_LIMIT,
+      proActive,
+      canAddCars: proActive || dealer.totalCarsAdded < FREE_LIMIT,
+    });
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }

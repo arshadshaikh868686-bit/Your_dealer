@@ -1,126 +1,281 @@
-const Car = require("../models/car"); // Car model
-const mongoose = require("mongoose"); // ObjectId aur validation ke liye
+const mongoose = require("mongoose");
+const Car = require("../models/car");
+const Dealer = require("../models/deler");
+const { FREE_LIMIT, isProActive } = require("../config/plan");
+const { uploadToCloudinary } = require("./uplodecontroller");
 
-// jin fields ko edit karne ki ijazat hai (dealer, status direct nahi)
-const EDITABLE = ["brand", "model", "year", "price", "fuelType", "transmission", "kmDriven", "color", "category"];
+const EDITABLE = [
+  "brand",
+  "model",
+  "year",
+  "price",
+  "fuelType",
+  "transmission",
+  "kmDriven",
+  "color",
+  "category",
+  "registrationNumber",
+  "ownerCount",
+  "insuranceExpiry",
+  "description",
+  "purchasePrice",
+];
 
-// ---------- ADD CAR ----------
+const cleanExpenses = (list) =>
+  Array.isArray(list)
+    ? list
+        .map((e) => ({
+          title: String(e.title || "").trim(),
+          amount: Number(e.amount),
+        }))
+        .filter((e) => e.title && Number.isFinite(e.amount) && e.amount >= 0)
+    : [];
+
 exports.addCar = async (req, res) => {
   try {
-    const data = { dealer: req.dealerId }; // car hamesha logged-in dealer ki
+    const dealer = await Dealer.findById(req.dealerId);
+    if (!dealer) return res.status(404).json({ message: "Dealer not found" });
+
+    let allowed;
+    if (isProActive(dealer)) {
+      await Dealer.updateOne(
+        { _id: dealer._id },
+        { $inc: { totalCarsAdded: 1 } }
+      );
+      allowed = true;
+    } else {
+      const updated = await Dealer.findOneAndUpdate(
+        { _id: dealer._id, totalCarsAdded: { $not: { $gte: FREE_LIMIT } } },
+        { $inc: { totalCarsAdded: 1 } }
+      );
+      allowed = !!updated;
+    }
+
+    if (!allowed) {
+      return res.status(403).json({
+        message: `Free limit (${FREE_LIMIT} cars) reached. Upgrade to Pro for ₹199/month.`,
+        code: "LIMIT_REACHED",
+      });
+    }
+
+    const data = { dealer: req.dealerId };
     EDITABLE.forEach((f) => {
-      if (req.body[f] !== undefined) data[f] = req.body[f]; // sirf allowed fields copy karo
+      if (req.body[f] !== undefined && req.body[f] !== "") data[f] = req.body[f];
     });
-    const car = await Car.create(data); // DB me save
-    res.status(201).json(car); // nayi car wapas bhejo
+    if (req.body.expenses !== undefined)
+      data.expenses = cleanExpenses(req.body.expenses);
+
+    try {
+      const car = await Car.create(data);
+      return res.status(201).json(car);
+    } catch (err) {
+      await Dealer.updateOne(
+        { _id: dealer._id },
+        { $inc: { totalCarsAdded: -1 } }
+      );
+      return res
+        .status(400)
+        .json({ message: "Failed to add car", error: err.message });
+    }
   } catch (err) {
-    res.status(400).json({ message: "Car add nahi hui", error: err.message }); // validation error aadi
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 };
 
-// ---------- GET ALL CARS (filters ke saath) ----------
 exports.getCars = async (req, res) => {
   try {
-    const { status, category, search } = req.query; // URL ke ?status=Sold&category=SUV jaise params
-    const filter = { dealer: req.dealerId }; // sirf apni gaadiyan
-    if (status) filter.status = status; // status filter
-    if (category) filter.category = category; // category filter
+    const { status, category, search } = req.query;
+    const filter = { dealer: req.dealerId };
+    if (status) filter.status = status;
+    if (category) filter.category = category;
     if (search) {
-      const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"); // special chars escape, case-insensitive
-      filter.$or = [{ brand: rx }, { model: rx }]; // brand ya model me match
+      const rx = new RegExp(
+        search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "i"
+      );
+      filter.$or = [{ brand: rx }, { model: rx }];
     }
-    const cars = await Car.find(filter).sort({ createdAt: -1 }); // naya pehle
+    const cars = await Car.find(filter).sort({ createdAt: -1 });
     res.json(cars);
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }
 };
 
-// ---------- STATS ----------
 exports.getStats = async (req, res) => {
   try {
     const rows = await Car.aggregate([
-      { $match: { dealer: new mongoose.Types.ObjectId(req.dealerId) } }, // sirf is dealer ki cars
+      { $match: { dealer: new mongoose.Types.ObjectId(req.dealerId) } },
+      { $addFields: { expTotal: { $sum: "$expenses.amount" } } },
+      {
+        $addFields: {
+          cost: {
+            $add: [{ $ifNull: ["$purchasePrice", 0] }, "$expTotal"],
+          },
+        },
+      },
       {
         $group: {
-          _id: null, // sab ko ek group me
-          total: { $sum: 1 }, // kul gaadiyan
-          sold: { $sum: { $cond: [{ $eq: ["$status", "Sold"] }, 1, 0] } }, // bik chuki
-          available: { $sum: { $cond: [{ $eq: ["$status", "Available"] }, 1, 0] } }, // bachi hui
-          totalSales: { $sum: { $ifNull: ["$soldPrice", 0] } }, // total bikri ki rakam
+          _id: null,
+          total: { $sum: 1 },
+          sold: {
+            $sum: { $cond: [{ $eq: ["$status", "Sold"] }, 1, 0] },
+          },
+          available: {
+            $sum: { $cond: [{ $eq: ["$status", "Available"] }, 1, 0] },
+          },
+          totalSales: { $sum: { $ifNull: ["$soldPrice", 0] } },
+          totalExpenses: { $sum: "$expTotal" },
+          soldCost: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "Sold"] }, "$cost", 0],
+            },
+          },
         },
       },
     ]);
-    res.json(rows[0] ? { total: rows[0].total, sold: rows[0].sold, available: rows[0].available, totalSales: rows[0].totalSales } : { total: 0, sold: 0, available: 0, totalSales: 0 }); // koi car nahi to sab 0
+    const r = rows[0];
+    res.json(
+      r
+        ? {
+            total: r.total,
+            sold: r.sold,
+            available: r.available,
+            totalSales: r.totalSales,
+            totalExpenses: r.totalExpenses,
+            profit: r.totalSales - r.soldCost,
+          }
+        : {
+            total: 0,
+            sold: 0,
+            available: 0,
+            totalSales: 0,
+            totalExpenses: 0,
+            profit: 0,
+          }
+    );
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }
 };
 
-// ---------- GET ONE CAR ----------
 exports.getCar = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Galat car id" }); // id format check
-    const car = await Car.findOne({ _id: req.params.id, dealer: req.dealerId }); // sirf apni car
-    if (!car) return res.status(404).json({ message: "Car nahi mili" });
+    if (!mongoose.isValidObjectId(req.params.id))
+      return res.status(400).json({ message: "Invalid car id" });
+    const car = await Car.findOne({
+      _id: req.params.id,
+      dealer: req.dealerId,
+    });
+    if (!car) return res.status(404).json({ message: "Car not found" });
     res.json(car);
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }
 };
 
-// ---------- EDIT CAR ----------
 exports.updateCar = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Galat car id" });
+    if (!mongoose.isValidObjectId(req.params.id))
+      return res.status(400).json({ message: "Invalid car id" });
     const updates = {};
     EDITABLE.forEach((f) => {
-      if (req.body[f] !== undefined) updates[f] = req.body[f]; // sirf allowed fields
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
     });
+    if (req.body.expenses !== undefined)
+      updates.expenses = cleanExpenses(req.body.expenses);
     const car = await Car.findOneAndUpdate(
-      { _id: req.params.id, dealer: req.dealerId }, // apni car hi edit ho
+      { _id: req.params.id, dealer: req.dealerId },
       updates,
-      { new: true, runValidators: true } // updated car wapas do, enum/required check chalao
+      { new: true, runValidators: true }
     );
-    if (!car) return res.status(404).json({ message: "Car nahi mili" });
+    if (!car) return res.status(404).json({ message: "Car not found" });
     res.json(car);
   } catch (err) {
-    res.status(400).json({ message: "Update nahi hua", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to update", error: err.message });
   }
 };
 
-// ---------- SOLD / AVAILABLE TOGGLE ----------
 exports.updateStatus = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Galat car id" });
-    const { status, soldPrice } = req.body; // status: "Sold" ya "Available"
-    if (!["Available", "Sold"].includes(status)) return res.status(400).json({ message: "Status Available ya Sold ho" });
+    if (!mongoose.isValidObjectId(req.params.id))
+      return res.status(400).json({ message: "Invalid car id" });
+    const { status, soldPrice, buyerName, buyerPhone } = req.body;
+    if (!["Available", "Sold"].includes(status))
+      return res
+        .status(400)
+        .json({ message: "Status must be Available or Sold" });
 
-    const car = await Car.findOne({ _id: req.params.id, dealer: req.dealerId });
-    if (!car) return res.status(404).json({ message: "Car nahi mili" });
+    const car = await Car.findOne({
+      _id: req.params.id,
+      dealer: req.dealerId,
+    });
+    if (!car) return res.status(404).json({ message: "Car not found" });
 
-    car.status = status; // status badla
     if (status === "Sold") {
-      car.soldPrice = soldPrice !== undefined ? soldPrice : car.price; // rate nahi diya to listed price
-      car.soldDate = new Date(); // aaj ki date
+      const name = (buyerName || "").trim();
+      const phone = (buyerPhone || "").trim();
+      if (!name)
+        return res.status(400).json({ message: "Buyer name is required" });
+      if (!/^[6-9]\d{9}$/.test(phone))
+        return res
+          .status(400)
+          .json({ message: "Enter a valid 10-digit mobile number" });
+      if (req.file && !req.file.mimetype.startsWith("image/"))
+        return res
+          .status(400)
+          .json({ message: "Buyer photo must be an image" });
+
+      const price =
+        soldPrice !== undefined && soldPrice !== ""
+          ? Number(soldPrice)
+          : car.price;
+      if (Number.isNaN(price))
+        return res
+          .status(400)
+          .json({ message: "Sold price must be a valid number" });
+
+      if (req.file) {
+        const result = await uploadToCloudinary(
+          req.file.buffer,
+          "cardealer/buyers"
+        );
+        car.buyerPhoto = result.secure_url;
+      }
+      car.status = "Sold";
+      car.soldPrice = price;
+      car.soldDate = new Date();
+      car.buyerName = name;
+      car.buyerPhone = phone;
     } else {
-      car.soldPrice = undefined; // wapas available to sold data hata do
+      car.status = "Available";
+      car.soldPrice = undefined;
       car.soldDate = undefined;
+      car.buyerName = undefined;
+      car.buyerPhone = undefined;
+      car.buyerPhoto = undefined;
     }
-    await car.save(); // save
+    await car.save();
     res.json(car);
   } catch (err) {
-    res.status(400).json({ message: "Status update nahi hua", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to update status", error: err.message });
   }
 };
 
-// ---------- DELETE CAR ----------
 exports.deleteCar = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Galat car id" });
-    const car = await Car.findOneAndDelete({ _id: req.params.id, dealer: req.dealerId }); // apni car hi delete ho
-    if (!car) return res.status(404).json({ message: "Car nahi mili" });
-    res.json({ message: "Car delete ho gayi" });
+    if (!mongoose.isValidObjectId(req.params.id))
+      return res.status(400).json({ message: "Invalid car id" });
+    const car = await Car.findOneAndDelete({
+      _id: req.params.id,
+      dealer: req.dealerId,
+    });
+    if (!car) return res.status(404).json({ message: "Car not found" });
+    res.json({ message: "Car deleted" });
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }

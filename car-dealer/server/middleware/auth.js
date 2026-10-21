@@ -1,18 +1,18 @@
-const jwt = require("jsonwebtoken"); // token verify karne ke liye
+const jwt = require("jsonwebtoken");
 
 const protect = (req, res, next) => {
-  const header = req.headers.authorization; // header: "Bearer <token>"
+  const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) {
-    return res.status(401).json({ message: "Token nahi mila, login karo" }); // token hi nahi hai
+    return res.status(401).json({ message: "Token nahi mila, login karo" });
   }
   try {
-    const token = header.split(" ")[1]; // "Bearer" hata ke sirf token nikala
-    const decoded = jwt.verify(token, process.env.JWT_SECRET); // token sahi hai ya nahi check
-    req.dealerId = decoded.id; // dealer ki id request me chipka di, aage controllers use karenge
-    next(); // aage badho
+    const token = header.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.dealerId = decoded.id;
+    next();
   } catch (err) {
-    return res.status(401).json({ message: "Token galat ya expire ho gaya" }); // token kharab
+    return res.status(401).json({ message: "Token galat ya expire ho gaya" });
   }
 };
 
-module.exports = protect; // export
+module.exports = protect;

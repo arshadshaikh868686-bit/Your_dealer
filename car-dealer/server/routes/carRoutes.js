@@ -1,15 +1,18 @@
-const express = require("express"); // express import
-const protect = require("../middleware/auth"); // login check
+const express = require("express");
+const protect = require("../middleware/auth");
+const { upload, handle } = require("../middleware/uplods");
 const { addCar, getCars, getStats, getCar, updateCar, updateStatus, deleteCar } = require("../controller/carcontroller");
+const { addImages, addDocument, deleteDocument } = require("../controller/uplodecontroller");
 
-const router = express.Router(); // router
+const router = express.Router();
+router.use(protect);
 
-router.use(protect); // is file ke saare routes login mange
-const { upload, handle } = require("../middleware/uplods"); // multer wrapper
-const { addImages, addDocument, deleteDocument } = require("../controller/uplodecontroller"); // upload controllers
-router.get("/stats", getStats); // /stats pehle, /:id se upar
-router.route("/").get(getCars).post(addCar); // list aur add
-router.route("/:id").get(getCar).put(updateCar).delete(deleteCar); // ek car: dekho, edit, delete
-router.patch("/:id/status", updateStatus); // sold/available
+router.get("/stats", getStats);
+router.route("/").get(getCars).post(addCar);
+router.post("/:id/images", handle(upload.array("images", 5)), addImages);
+router.post("/:id/documents", handle(upload.single("file")), addDocument);
+router.delete("/:id/documents/:docId", deleteDocument);
+router.patch("/:id/status", handle(upload.single("buyerPhoto")), updateStatus);
+router.route("/:id").get(getCar).put(updateCar).delete(deleteCar);
 
-module.exports = router; // export
+module.exports = router;
