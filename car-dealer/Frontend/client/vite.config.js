@@ -4,5 +4,17 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  resolve: { dedupe: ["react", "react-dom"] }, // react ki ek hi copy use ho
+  resolve: { 
+    dedupe: ["react", "react-dom"] 
+  },
+  build: {
+    rolldownOptions: {
+      external: (id) => {
+        if (!id.startsWith('.') && !id.startsWith('/') && !id.startsWith('\0')) {
+          return true;
+        }
+        return false;
+      }
+    }
+  }
 });
