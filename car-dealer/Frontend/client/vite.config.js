@@ -10,10 +10,10 @@ export default defineConfig({
   build: {
     rolldownOptions: {
       external: (id) => {
-        if (!id.startsWith('.') && !id.startsWith('/') && !id.startsWith('\0')) {
-          return true;
+        if (id.startsWith('vite/') || id.startsWith('.') || id.startsWith('/') || id.startsWith('\0')) {
+          return false;
         }
-        return false;
+        return true;
       }
     }
   }
