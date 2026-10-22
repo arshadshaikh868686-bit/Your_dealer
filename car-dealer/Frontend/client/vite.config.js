@@ -8,13 +8,9 @@ export default defineConfig({
     dedupe: ["react", "react-dom"] 
   },
   build: {
-    rolldownOptions: {
-      external: (id) => {
-        if (id.startsWith('vite/') || id.startsWith('.') || id.startsWith('/') || id.startsWith('\0')) {
-          return false;
-        }
-        return true;
-      }
+    // Rolldown ko strict constraints se hatakar basic application bundle karne ke liye default par set karein
+    rollupOptions: {
+      external: []
     }
   }
 });
